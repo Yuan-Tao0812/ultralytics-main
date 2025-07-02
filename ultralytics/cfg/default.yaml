@@ -119,6 +119,10 @@ copy_paste: 0.0 # (float) segment copy-paste (probability)
 copy_paste_mode: "flip" # (str) the method to do copy_paste augmentation (flip, mixup)
 auto_augment: randaugment # (str) auto augmentation policy for classification (randaugment, autoaugment, augmix)
 erasing: 0.4 # (float) probability of random erasing during classification training (0-0.9), 0 means no erasing, must be less than 1.0.
+smart_hide_and_seek: false # 是否启用 SmartHideAndSeek
+has_prob: 0.5              # 应用 SmartHideAndSeek 的概率
+has_patch_ratio: 0.05      # 补丁大小比例
+has_hide_prob: 0.3         # 隐藏概率
 
 # Custom config.yaml ---------------------------------------------------------------------------------------------------
 cfg: # (str, optional) for overriding defaults.yaml
