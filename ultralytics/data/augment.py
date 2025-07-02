@@ -5,6 +5,7 @@ import random
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple, Union
 
+import os
 import cv2
 import numpy as np
 import torch
@@ -165,8 +166,8 @@ class SmartHideAndSeek:
         self.dataset_mean = [103.939, 116.779, 123.68]  # BGR顺序
 
         # 小目标定义阈值 (像素面积)
-        self.small_object_threshold = 1000 if dataset_stats is None else dataset_stats.get('small_object_threshold',
-                                                                                           1000)
+        self.small_object_threshold = 1000 if self.dataset_stats is None else self.dataset_stats.get(
+            'small_object_threshold', 1000)
 
     def __call__(self, image, targets=None):
         """
@@ -255,30 +256,53 @@ class SmartHideAndSeek:
 
 
 # Compute statistics on a dataset
-def calculate_dataset_stats(dataset, sample_size=1000):
+def calculate_dataset_stats(dataset_path=None, sample_size=1000):
     """1000 samples are used to estimate basic statistical characteristics of the dataset"""
+    if dataset_path is None:
+        dataset_path = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train"
+    images_dir = os.path.join(dataset_path, "images")
+    labels_dir = os.path.join(dataset_path, "labels")
+
+    # 获取所有图像文件（支持常见格式）
+    img_extensions = [".jpg", ".jpeg", ".png"]
+    img_files = [
+        f for f in os.listdir(images_dir)
+        if os.path.splitext(f)[1].lower() in img_extensions
+    ]
+
     # Image length, width and area
     heights, widths = [], []
     target_areas = []
 
     # Randomly sample a portion of data from the training set to calculate key statistical features
-    indices = random.sample(range(len(dataset)), min(sample_size, len(dataset)))
+    sampled_files = random.sample(img_files, min(sample_size, len(img_files)))
 
-    for idx in indices:
-        img, targets = dataset[idx]  # Return the image data and all object annotations corresponding to the image
-        h, w = img.shape[:2]
-        heights.append(h)
-        widths.append(w)
+    for img_name in sampled_files:
+        # 1. 读取图像尺寸（仅宽高）
+        img_path = os.path.join(images_dir, img_name)
+        with Image.open(img_path) as img:
+            w, h = img.size  # PIL返回 (width, height)
+            heights.append(h)
+            widths.append(w)
 
-        for target in targets:
-            x1, y1, x2, y2 = target['bbox']
-            area = (x2 - x1) * (y2 - y1)
-            target_areas.append(area)
+        # 2. 读取对应YOLO格式标签
+        label_name = os.path.splitext(img_name)[0] + ".txt"
+        label_path = os.path.join(labels_dir, label_name)
+
+        # 解析YOLO格式标签（每行：class x_center y_center width height）
+        with open(label_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:  # 仅处理非空行
+                    parts = line.split()
+                    # 直接提取归一化宽高（第4、5个字段）
+                    w_norm, h_norm = map(float, parts[3:5])
+                    # 计算实际面积并添加到列表
+                    target_areas.append(w_norm * w * h_norm * h)
 
     # Calculate statistics
     avg_height = np.mean(heights)
     avg_width = np.mean(widths)
-
     min_area = np.min(target_areas)
     max_area = np.max(target_areas)
     mean_area = np.mean(target_areas)
@@ -343,7 +367,6 @@ class Compose:
         self._add_smart_hide_and_seek()  # 新增方法：添加自定义增强 new
 
     def _add_smart_hide_and_seek(self):  # new
-        """根据配置参数添加 SmartHideAndSeek 增强"""
         # 从超参数中读取是否启用（默认不启用）
         use_smart_has = self.hyp.get('smart_hide_and_seek', False)
         if not use_smart_has:
@@ -354,11 +377,16 @@ class Compose:
         hide_prob = self.hyp.get('has_hide_prob', 0.3)
         has_prob = self.hyp.get('has_prob', 0.5)  # 应用概率
 
+        dataset_path = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train"
+        dataset_stats = calculate_dataset_stats(dataset_path)
+        if dataset_stats is None:
+            print("警告：无法计算数据集统计信息，使用默认值")
+
         # 初始化 SmartHideAndSeek 增强器
         self.smart_has = SmartHideAndSeek(
             patch_size_ratio=patch_size_ratio,
             hide_prob=hide_prob,
-            # 其他参数使用类的默认值
+            dataset_stats=dataset_stats
         )
 
         # 将增强器包装成带概率的函数（控制是否应用）
@@ -369,6 +397,8 @@ class Compose:
                 # 从 data 中提取图像和目标（YOLOv11 的 data 格式为字典）
                 img = data['img']  # 图像（BGR 格式）
                 targets = data.get('bboxes', [])  # 目标框（格式需与 SmartHideAndSeek 兼容）
+                if targets and not isinstance(targets[0], dict):
+                    print(f"警告：目标格式不兼容，期望 dict，实际 {type(targets[0])}")
                 # 应用增强
                 img = self.smart_has(img, targets)
                 data['img'] = img  # 更新图像
