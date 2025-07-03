@@ -391,18 +391,19 @@ class Compose:
 
         # 将增强器包装成带概率的函数（控制是否应用）
         def smart_has_wrapper(data):
-            """带概率的增强包装器"""
-            if random.random() < has_prob:
-                print("应用 SmartHideAndSeek 增强")  # 调试用，确认增强被调用
-                # 从 data 中提取图像和目标（YOLOv11 的 data 格式为字典）
-                img = data['img']  # 图像（BGR 格式）
-                targets = data.get('bboxes', [])  # 目标框（格式需与 SmartHideAndSeek 兼容）
-                if targets and not isinstance(targets[0], dict):
-                    print(f"警告：目标格式不兼容，期望 dict，实际 {type(targets[0])}")
-                # 应用增强
-                img = self.smart_has(img, targets)
-                data['img'] = img  # 更新图像
-            return data
+            try:
+                """带概率的增强包装器"""
+                if random.random() < has_prob:
+                    print("应用 SmartHideAndSeek 增强")  # 调试用，确认增强被调用
+                    # 从 data 中提取图像和目标（YOLOv11 的 data 格式为字典）
+                    img = data['img']  # 图像（BGR 格式）
+                    targets = data.get('bboxes', [])  # 目标框（格式需与 SmartHideAndSeek 兼容）
+                    if targets and not isinstance(targets[0], dict):
+                        print(f"警告：目标格式不兼容，期望 dict，实际 {type(targets[0])}")
+                    data['img'] = img  # 更新图像
+                return data
+            except Exception as e:
+                print(f"执行 smart_has_wrapper 函数时出现异常: {e}")
 
         # 将增强添加到 transforms 列表的末尾（或指定位置）
         self.transforms.append(smart_has_wrapper)
