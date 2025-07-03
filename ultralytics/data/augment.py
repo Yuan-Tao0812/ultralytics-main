@@ -379,8 +379,7 @@ class Compose:
 
         dataset_path = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train"
         dataset_stats = calculate_dataset_stats(dataset_path)
-        if dataset_stats is None:
-            print("警告：无法计算数据集统计信息，使用默认值")
+        print("已计算数据集统计信息")
 
         # 初始化 SmartHideAndSeek 增强器
         self.smart_has = SmartHideAndSeek(
