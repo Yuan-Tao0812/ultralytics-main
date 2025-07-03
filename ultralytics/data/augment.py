@@ -365,6 +365,7 @@ class Compose:
         self.transforms = transforms if isinstance(transforms, list) else [transforms]
         self.hyp = hyp or {}  # new
         self._add_smart_hide_and_seek()  # 新增方法：添加自定义增强 new
+        print("Compose")
 
     def _add_smart_hide_and_seek(self):  # new
         # 从超参数中读取是否启用（默认不启用）
