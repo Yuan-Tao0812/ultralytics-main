@@ -5,7 +5,6 @@ import random
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple, Union
 
-import os
 import cv2
 import numpy as np
 import torch
@@ -144,189 +143,6 @@ class BaseTransform:
         self.apply_semantic(labels)
 
 
-class SmartHideAndSeek:
-    def __init__(self,
-                 patch_size_ratio=0.05,  # 块大小占图像短边的比例
-                 hide_prob=0.3,  # 整体隐藏概率
-                 min_patch_size=16,  # 最小块尺寸
-                 max_patch_size=64,  # 最大块尺寸
-                 target_avoidance=True,  # 是否启用目标区域避免策略
-                 small_object_protection=True,  # 是否启用小目标保护策略
-                 dataset_stats=None):  # 数据集统计信息,用于智能调整参数
-
-        self.patch_size_ratio = patch_size_ratio
-        self.hide_prob = hide_prob
-        self.min_patch_size = min_patch_size
-        self.max_patch_size = max_patch_size
-        self.target_avoidance = target_avoidance
-        self.small_object_protection = small_object_protection
-        self.dataset_stats = dataset_stats
-
-        # 默认数据集均值 (VisDrone数据集RGB均值)
-        self.dataset_mean = [103.939, 116.779, 123.68]  # BGR顺序
-
-        # 小目标定义阈值 (像素面积)
-        self.small_object_threshold = 1000 if self.dataset_stats is None else self.dataset_stats.get(
-            'small_object_threshold', 1000)
-
-    def __call__(self, image, targets=None):
-        """
-        对图像应用智能Hide-and-Seek增强
-
-        参数:
-            image: 输入图像 (numpy array, BGR格式)
-            targets: 目标标注信息 (list of dicts, 包含'bbox': [x1,y1,x2,y2])
-        """
-        h, w = image.shape[:2]
-
-        # 动态计算块大小
-        patch_size = int(min(h, w) * self.patch_size_ratio)
-        patch_size = max(self.min_patch_size, min(patch_size, self.max_patch_size))
-
-        # 创建目标掩码 (用于避开目标区域)
-        target_mask = np.ones((h, w), dtype=np.bool_)
-        if targets is not None and self.target_avoidance:
-            for target in targets:
-                x1, y1, x2, y2 = map(int, target['bbox'])
-                # 扩展边界框以增加保护范围
-                expand = patch_size // 2
-                x1 = max(0, x1 - expand)
-                y1 = max(0, y1 - expand)
-                x2 = min(w, x2 + expand)
-                y2 = min(h, y2 + expand)
-                target_mask[y1:y2, x1:x2] = False
-
-        # 创建小目标掩码 (给予额外保护)
-        small_object_mask = np.ones((h, w), dtype=np.bool_)
-        if targets is not None and self.small_object_protection:
-            for target in targets:
-                x1, y1, x2, y2 = map(int, target['bbox'])
-                area = (x2 - x1) * (y2 - y1)
-                if area < self.small_object_threshold:
-                    # 小目标区域给予更强保护
-                    expand = patch_size
-                    x1 = max(0, x1 - expand)
-                    y1 = max(0, y1 - expand)
-                    x2 = min(w, x2 + expand)
-                    y2 = min(h, y2 + expand)
-                    small_object_mask[y1:y2, x1:x2] = False
-
-        # 计算可划分的补丁数量
-        num_patches_h = h // patch_size
-        num_patches_w = w // patch_size
-
-        augmented = image.copy()
-
-        # 遍历每个补丁并决定是否隐藏
-        for i in range(num_patches_h):
-            for j in range(num_patches_w):
-                # 计算补丁位置
-                start_h = i * patch_size
-                end_h = start_h + patch_size
-                start_w = j * patch_size
-                end_w = start_w + patch_size
-
-                # 确保不超出边界
-                end_h = min(end_h, h)
-                end_w = min(end_w, w)
-
-                # 检查补丁中心是否在目标区域内
-                patch_center_h = (start_h + end_h) // 2
-                patch_center_w = (start_w + end_w) // 2
-
-                # 基础隐藏概率
-                hide_p = self.hide_prob
-
-                # 应用目标避开策略
-                if self.target_avoidance and not target_mask[patch_center_h, patch_center_w]:
-                    # 目标区域降低隐藏概率
-                    hide_p *= 0.2
-
-                # 应用小目标保护策略
-                if self.small_object_protection and not small_object_mask[patch_center_h, patch_center_w]:
-                    # 小目标区域进一步降低隐藏概率
-                    hide_p *= 0.1
-
-                # 随机决定是否隐藏
-                if random.random() < hide_p:
-                    # 隐藏当前补丁
-                    augmented[start_h:end_h, start_w:end_w] = self.dataset_mean
-
-        return augmented
-
-
-# Compute statistics on a dataset
-def calculate_dataset_stats(dataset_path=None, sample_size=1000):
-    """1000 samples are used to estimate basic statistical characteristics of the dataset"""
-    if dataset_path is None:
-        dataset_path = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train"
-    images_dir = os.path.join(dataset_path, "images")
-    labels_dir = os.path.join(dataset_path, "labels")
-
-    # 获取所有图像文件（支持常见格式）
-    img_extensions = [".jpg", ".jpeg", ".png"]
-    img_files = [
-        f for f in os.listdir(images_dir)
-        if os.path.splitext(f)[1].lower() in img_extensions
-    ]
-
-    # Image length, width and area
-    heights, widths = [], []
-    target_areas = []
-
-    # Randomly sample a portion of data from the training set to calculate key statistical features
-    sampled_files = random.sample(img_files, min(sample_size, len(img_files)))
-
-    for img_name in sampled_files:
-        # 1. 读取图像尺寸（仅宽高）
-        img_path = os.path.join(images_dir, img_name)
-        with Image.open(img_path) as img:
-            w, h = img.size  # PIL返回 (width, height)
-            heights.append(h)
-            widths.append(w)
-
-        # 2. 读取对应YOLO格式标签
-        label_name = os.path.splitext(img_name)[0] + ".txt"
-        label_path = os.path.join(labels_dir, label_name)
-
-        # 解析YOLO格式标签（每行：class x_center y_center width height）
-        with open(label_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line:  # 仅处理非空行
-                    parts = line.split()
-                    # 直接提取归一化宽高（第4、5个字段）
-                    w_norm, h_norm = map(float, parts[3:5])
-                    # 计算实际面积并添加到列表
-                    target_areas.append(w_norm * w * h_norm * h)
-
-    # Calculate statistics
-    avg_height = np.mean(heights)
-    avg_width = np.mean(widths)
-    min_area = np.min(target_areas)
-    max_area = np.max(target_areas)
-    mean_area = np.mean(target_areas)
-    median_area = np.median(target_areas)
-
-    candidate1 = median_area / 4  # 中位数的1/4
-    candidate2 = min_area * 2  # 最小目标的2倍
-    candidate3 = mean_area / 8  # 平均值的1/8
-    candidate4 = min_area  # 安全下限（至少100px²或最小目标）
-    candidates = [candidate1, candidate2, candidate3, candidate4]
-    candidates.sort()  # 排序后取中间值，减少极端值影响
-    small_object_threshold = (candidates[1] + candidates[2]) / 2
-    max_threshold = median_area / 2  # 不高于中位数的一半
-    small_object_threshold = max(min_area, min(small_object_threshold, max_threshold))
-
-    return {
-        'avg_height': avg_height,
-        'avg_width': avg_width,
-        'min_area': min_area,
-        'max_area': max_area,
-        'small_object_threshold': small_object_threshold
-    }
-
-
 class Compose:
     """
     A class for composing multiple image transformations.
@@ -350,7 +166,7 @@ class Compose:
         >>> compose.insert(0, RandomFlip())
     """
 
-    def __init__(self, transforms, hyp=None):
+    def __init__(self, transforms):
         """
         Initialize the Compose object with a list of transforms.
 
@@ -363,50 +179,6 @@ class Compose:
             >>> compose = Compose(transforms)
         """
         self.transforms = transforms if isinstance(transforms, list) else [transforms]
-        self.hyp = hyp or {}  # new
-        self._add_smart_hide_and_seek()  # 新增方法：添加自定义增强 new
-        print("Compose")
-
-    def _add_smart_hide_and_seek(self):  # new
-        # 从超参数中读取是否启用（默认不启用）
-        use_smart_has = self.hyp.get('smart_hide_and_seek', False)
-        if not use_smart_has:
-            return  # 不启用则直接返回
-
-        # 读取超参数（使用默认值如果未配置）
-        patch_size_ratio = self.hyp.get('has_patch_ratio', 0.05)
-        hide_prob = self.hyp.get('has_hide_prob', 0.3)
-        has_prob = self.hyp.get('has_prob', 0.5)  # 应用概率
-
-        dataset_path = "/content/drive/MyDrive/VisDrone2019-YOLO/VisDrone2019-YOLO-train"
-        dataset_stats = calculate_dataset_stats(dataset_path)
-        print("已计算数据集统计信息")
-
-        # 初始化 SmartHideAndSeek 增强器
-        self.smart_has = SmartHideAndSeek(
-            patch_size_ratio=patch_size_ratio,
-            hide_prob=hide_prob,
-            dataset_stats=dataset_stats
-        )
-
-        # 将增强器包装成带概率的函数（控制是否应用）
-        def smart_has_wrapper(data):
-            try:
-                """带概率的增强包装器"""
-                if random.random() < has_prob:
-                    print("应用 SmartHideAndSeek 增强")  # 调试用，确认增强被调用
-                    # 从 data 中提取图像和目标（YOLOv11 的 data 格式为字典）
-                    img = data['img']  # 图像（BGR 格式）
-                    targets = data.get('bboxes', [])  # 目标框（格式需与 SmartHideAndSeek 兼容）
-                    if targets and not isinstance(targets[0], dict):
-                        print(f"警告：目标格式不兼容，期望 dict，实际 {type(targets[0])}")
-                    data['img'] = img  # 更新图像
-                return data
-            except Exception as e:
-                print(f"执行 smart_has_wrapper 函数时出现异常: {e}")
-
-        # 将增强添加到 transforms 列表的末尾（或指定位置）
-        self.transforms.append(smart_has_wrapper)
 
     def __call__(self, data):
         """
